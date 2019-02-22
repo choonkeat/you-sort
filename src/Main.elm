@@ -6,6 +6,9 @@ import Dict exposing (Dict)
 import Html exposing (Html, br, button, div, h1, h2, iframe, input, li, main_, node, p, pre, progress, text, ul)
 import Html.Attributes exposing (attribute, class, href, placeholder, rel, src, style, type_, value)
 import Html.Events exposing (onClick, onInput)
+import Json.Decode
+import Json.Encode
+import LocalStorage
 import Random
 import Random.List exposing (shuffle)
 import Url
@@ -46,6 +49,7 @@ type Msg
     | Greater Subject
     | Lesser Subject
     | Shuffled (List Int)
+    | StoreChanged LocalStorage.Event
 
 
 init : Flags -> Url.Url -> Browser.Navigation.Key -> ( Model, Cmd Msg )
@@ -61,10 +65,10 @@ init flags url navKey =
 
         cmd =
             if model.progress == [] then
-                Random.generate Shuffled (shuffle (List.range 1 10))
+                LocalStorage.request "you-sort"
 
             else
-                Cmd.none
+                saveState model
     in
     ( model, cmd )
 
@@ -114,11 +118,6 @@ debugView model =
             , text (Debug.toString allNotes)
             , text "\n"
             , text "    }"
-            ]
-        , p [ class "text-muted" ]
-            [ text "-- This app does not save state."
-            , text " So, copy the `code` above anytime to \"save\""
-            , text " and overwrite your `init` to \"restore\"."
             ]
         ]
 
@@ -187,15 +186,21 @@ update msg model =
 
                 newunsorted =
                     List.drop 1 dataset
+
+                newmodel =
+                    { model | progress = newprogress, unsorted = newunsorted }
             in
-            ( { model | progress = newprogress, unsorted = newunsorted }, Cmd.none )
+            ( model, saveState newmodel )
 
         EnteredNotes subject string ->
             let
                 newnotes =
                     Dict.insert subject string model.notes
+
+                newmodel =
+                    { model | notes = newnotes }
             in
-            ( { model | notes = newnotes }, Cmd.none )
+            ( model, saveState newmodel )
 
         Greater subject ->
             let
@@ -206,8 +211,11 @@ update msg model =
 
                         _ ->
                             Debug.log "cannot greater" model.progress
+
+                newmodel =
+                    updateNewProgress model newprogress
             in
-            ( updateNewProgress model newprogress, Cmd.none )
+            ( model, saveState newmodel )
 
         Lesser subject ->
             let
@@ -218,8 +226,44 @@ update msg model =
 
                         _ ->
                             Debug.log "cannot lesser" model.progress
+
+                newmodel =
+                    updateNewProgress model newprogress
             in
-            ( updateNewProgress model newprogress, Cmd.none )
+            ( model, saveState newmodel )
+
+        StoreChanged v ->
+            case v of
+                LocalStorage.Updated key maybeValue ->
+                    case maybeValue of
+                        Nothing ->
+                            ( model, Random.generate Shuffled (shuffle (List.range 1 10)) )
+
+                        Just s ->
+                            case Json.Decode.decodeString (decodeModel model) s of
+                                Err err ->
+                                    let
+                                        _ =
+                                            Debug.log "localStorage err" err
+                                    in
+                                    ( model, Cmd.none )
+
+                                Ok newmodel ->
+                                    ( newmodel, Cmd.none )
+
+                LocalStorage.WriteFailure key maybeValue err ->
+                    let
+                        _ =
+                            Debug.log "localStorage fail" v
+                    in
+                    ( model, Cmd.none )
+
+                LocalStorage.BadMessage err ->
+                    let
+                        _ =
+                            Debug.log "localStorage bad" v
+                    in
+                    ( model, Cmd.none )
 
 
 updateNewProgress : Model -> List (List Subject) -> Model
@@ -249,4 +293,57 @@ updateNewProgress model newprogress =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Sub.none
+    Sub.map StoreChanged LocalStorage.watchChanges
+
+
+
+-- SAVE STATE
+
+
+saveState : Model -> Cmd Msg
+saveState model =
+    Json.Encode.encode 2 (encodeModel model)
+        |> LocalStorage.save "you-sort"
+
+
+encodeNote : ( String, String ) -> Json.Encode.Value
+encodeNote v =
+    let
+        ( v0, v1 ) =
+            v
+    in
+    Json.Encode.list Json.Encode.string [ v0, v1 ]
+
+
+encodeNotes : List ( String, String ) -> Json.Encode.Value
+encodeNotes =
+    Json.Encode.list encodeNote
+
+
+encodeModel : Model -> Json.Encode.Value
+encodeModel model =
+    Json.Encode.object
+        [ ( "sorted", Json.Encode.list Json.Encode.string model.sorted )
+        , ( "progress", Json.Encode.list (Json.Encode.list Json.Encode.string) model.progress )
+        , ( "unsorted", Json.Encode.list Json.Encode.string model.unsorted )
+        , ( "notes", encodeNotes (Dict.toList model.notes) )
+        ]
+
+
+decodeNotes : Json.Decode.Decoder (List ( String, String ))
+decodeNotes =
+    Json.Decode.list
+        (Json.Decode.map2 Tuple.pair
+            (Json.Decode.index 0 Json.Decode.string)
+            (Json.Decode.index 1 Json.Decode.string)
+        )
+
+
+decodeModel : Model -> Json.Decode.Decoder Model
+decodeModel model =
+    Json.Decode.map5 Model
+        (Json.Decode.succeed model.navKey)
+        (Json.Decode.field "sorted" (Json.Decode.list Json.Decode.string))
+        (Json.Decode.field "progress" (Json.Decode.list (Json.Decode.list Json.Decode.string)))
+        (Json.Decode.field "unsorted" (Json.Decode.list Json.Decode.string))
+        (Json.Decode.field "notes" (decodeNotes |> Json.Decode.map Dict.fromList))
