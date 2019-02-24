@@ -2,6 +2,7 @@ module Main exposing (main)
 
 import Browser
 import Browser.Navigation
+import Data
 import Dict exposing (Dict)
 import Html exposing (Html, br, button, div, h1, h2, iframe, input, li, main_, node, p, pre, progress, text, ul)
 import Html.Attributes exposing (attribute, class, href, placeholder, rel, src, style, type_, value)
@@ -27,15 +28,11 @@ main =
 
 type alias Model =
     { navKey : Browser.Navigation.Key
-    , sorted : List Subject
-    , progress : List (List Subject)
-    , unsorted : List Subject
-    , notes : Dict Subject String
+    , sorted : List Data.Subject
+    , progress : List (List Data.Subject)
+    , unsorted : List Data.Subject
+    , notes : Dict Data.Subject String
     }
-
-
-type alias Subject =
-    String
 
 
 type alias Flags =
@@ -45,10 +42,10 @@ type alias Flags =
 type Msg
     = OnUrlRequest Browser.UrlRequest
     | OnUrlChange Url.Url
-    | EnteredNotes Subject String
-    | Greater Subject
-    | Lesser Subject
-    | Shuffled (List Int)
+    | EnteredNotes Data.Subject String
+    | Greater Data.Subject
+    | Lesser Data.Subject
+    | Shuffled (List Data.Subject)
     | StoreChanged LocalStorage.Event
     | ClearStore
 
@@ -84,7 +81,7 @@ view model =
             []
         , main_ [ class "container" ]
             [ div [ class "containers" ]
-                [ viewSubjects model
+                [ viewPair model
                 , debugView model
                 , button [ class "btn btn-danger", onClick ClearStore ] [ text "Reset" ]
                 ]
@@ -124,8 +121,8 @@ debugView model =
         ]
 
 
-viewSubjects : Model -> Html Msg
-viewSubjects model =
+viewPair : Model -> Html Msg
+viewPair model =
     case ( model.unsorted, model.progress ) of
         ( u1 :: us, greaters :: [ pivot ] :: lessers :: others ) ->
             div
@@ -133,8 +130,8 @@ viewSubjects model =
                 , style "border" "1px solid black"
                 ]
                 (List.append
-                    [ viewSubject model u1 (Greater u1)
-                    , viewSubject model pivot (Lesser u1)
+                    [ viewOne model u1 (Greater u1)
+                    , viewOne model pivot (Lesser u1)
                     , div [ class "w-100" ] []
                     ]
                     []
@@ -144,10 +141,10 @@ viewSubjects model =
             text ""
 
 
-viewSubject : Model -> Subject -> Msg -> Html Msg
-viewSubject model subject msg =
+viewOne : Model -> Data.Subject -> Msg -> Html Msg
+viewOne model subject msg =
     div [ class "col mb-2" ]
-        [ h1 [] [ text subject ]
+        [ Data.viewSubject subject
         , div [ class "form-group" ]
             [ input
                 [ type_ "text"
@@ -178,11 +175,8 @@ update msg model =
         OnUrlChange urlUrl ->
             ( model, Cmd.none )
 
-        Shuffled numberlist ->
+        Shuffled dataset ->
             let
-                dataset =
-                    List.map String.fromInt numberlist
-
                 newprogress =
                     [ [], List.take 1 dataset, [] ]
 
@@ -235,14 +229,14 @@ update msg model =
             ( model, saveState newmodel )
 
         ClearStore ->
-            ( model, newRandomState )
+            ( model, Data.newRandomState Shuffled )
 
         StoreChanged v ->
             case v of
                 LocalStorage.Updated key maybeValue ->
                     case maybeValue of
                         Nothing ->
-                            ( model, newRandomState )
+                            ( model, Data.newRandomState Shuffled )
 
                         Just s ->
                             case Json.Decode.decodeString (decodeModel model) s of
@@ -271,7 +265,7 @@ update msg model =
                     ( model, Cmd.none )
 
 
-updateNewProgress : Model -> List (List Subject) -> Model
+updateNewProgress : Model -> List (List Data.Subject) -> Model
 updateNewProgress model newprogress =
     case model.unsorted of
         t1 :: t2 :: ts ->
@@ -305,46 +299,41 @@ subscriptions model =
 -- SAVE STATE
 
 
-newRandomState : Cmd Msg
-newRandomState =
-    Random.generate Shuffled (shuffle (List.range 1 10))
-
-
 saveState : Model -> Cmd Msg
 saveState model =
     Json.Encode.encode 2 (encodeModel model)
         |> LocalStorage.save "you-sort"
 
 
-encodeNote : ( String, String ) -> Json.Encode.Value
+encodeNote : ( Data.Subject, String ) -> Json.Encode.Value
 encodeNote v =
     let
         ( v0, v1 ) =
             v
     in
-    Json.Encode.list Json.Encode.string [ v0, v1 ]
+    Json.Encode.list Json.Encode.string [ Data.subjectString v0, v1 ]
 
 
-encodeNotes : List ( String, String ) -> Json.Encode.Value
-encodeNotes =
+encodeNotesList : List ( Data.Subject, String ) -> Json.Encode.Value
+encodeNotesList =
     Json.Encode.list encodeNote
 
 
 encodeModel : Model -> Json.Encode.Value
 encodeModel model =
     Json.Encode.object
-        [ ( "sorted", Json.Encode.list Json.Encode.string model.sorted )
-        , ( "progress", Json.Encode.list (Json.Encode.list Json.Encode.string) model.progress )
-        , ( "unsorted", Json.Encode.list Json.Encode.string model.unsorted )
-        , ( "notes", encodeNotes (Dict.toList model.notes) )
+        [ ( "sorted", Json.Encode.list Data.subjectEncoder model.sorted )
+        , ( "progress", Json.Encode.list (Json.Encode.list Data.subjectEncoder) model.progress )
+        , ( "unsorted", Json.Encode.list Data.subjectEncoder model.unsorted )
+        , ( "notes", encodeNotesList (Dict.toList model.notes) )
         ]
 
 
-decodeNotes : Json.Decode.Decoder (List ( String, String ))
-decodeNotes =
+decodeNotesList : Json.Decode.Decoder (List ( Data.Subject, String ))
+decodeNotesList =
     Json.Decode.list
         (Json.Decode.map2 Tuple.pair
-            (Json.Decode.index 0 Json.Decode.string)
+            (Json.Decode.index 0 Data.subjectDecoder)
             (Json.Decode.index 1 Json.Decode.string)
         )
 
@@ -353,7 +342,7 @@ decodeModel : Model -> Json.Decode.Decoder Model
 decodeModel model =
     Json.Decode.map5 Model
         (Json.Decode.succeed model.navKey)
-        (Json.Decode.field "sorted" (Json.Decode.list Json.Decode.string))
-        (Json.Decode.field "progress" (Json.Decode.list (Json.Decode.list Json.Decode.string)))
-        (Json.Decode.field "unsorted" (Json.Decode.list Json.Decode.string))
-        (Json.Decode.field "notes" (decodeNotes |> Json.Decode.map Dict.fromList))
+        (Json.Decode.field "sorted" (Json.Decode.list Data.subjectDecoder))
+        (Json.Decode.field "progress" (Json.Decode.list (Json.Decode.list Data.subjectDecoder)))
+        (Json.Decode.field "unsorted" (Json.Decode.list Data.subjectDecoder))
+        (Json.Decode.field "notes" (decodeNotesList |> Json.Decode.map Dict.fromList))
