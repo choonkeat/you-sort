@@ -50,6 +50,7 @@ type Msg
     | Lesser Subject
     | Shuffled (List Int)
     | StoreChanged LocalStorage.Event
+    | ClearStore
 
 
 init : Flags -> Url.Url -> Browser.Navigation.Key -> ( Model, Cmd Msg )
@@ -85,6 +86,7 @@ view model =
             [ div [ class "containers" ]
                 [ viewSubjects model
                 , debugView model
+                , button [ class "btn btn-danger", onClick ClearStore ] [ text "Reset" ]
                 ]
             ]
         ]
@@ -188,7 +190,7 @@ update msg model =
                     List.drop 1 dataset
 
                 newmodel =
-                    { model | progress = newprogress, unsorted = newunsorted }
+                    { model | progress = newprogress, unsorted = newunsorted, sorted = [] }
             in
             ( model, saveState newmodel )
 
@@ -232,12 +234,15 @@ update msg model =
             in
             ( model, saveState newmodel )
 
+        ClearStore ->
+            ( model, newRandomState )
+
         StoreChanged v ->
             case v of
                 LocalStorage.Updated key maybeValue ->
                     case maybeValue of
                         Nothing ->
-                            ( model, Random.generate Shuffled (shuffle (List.range 1 10)) )
+                            ( model, newRandomState )
 
                         Just s ->
                             case Json.Decode.decodeString (decodeModel model) s of
@@ -298,6 +303,11 @@ subscriptions model =
 
 
 -- SAVE STATE
+
+
+newRandomState : Cmd Msg
+newRandomState =
+    Random.generate Shuffled (shuffle (List.range 1 10))
 
 
 saveState : Model -> Cmd Msg
